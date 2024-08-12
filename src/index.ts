@@ -72,7 +72,7 @@ app.get("/films", (req: Request, res: Response) => {
   }
 
   const response = JSON.stringify({ data: films });
-  res.send(response).setHeader("x-custom-header", neededHeader);
+  res.setHeader("x-custom-header", neededHeader).send(response);
 });
 
 app.get("/token", (req: Request, res: Response) => {
