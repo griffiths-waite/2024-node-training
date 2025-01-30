@@ -13,78 +13,90 @@ jobs:
 
       - name: Fetch Dependabot Alerts
         run: |
-          curl -H "Authorization: token ${{ secrets.SECURITY_TOKEN }}" \
+          curl -s -H "Authorization: token ${{ secrets.SECURITY_TOKEN }}" \
                -H "Accept: application/vnd.github.v3+json" \
                "https://api.github.com/repos/${{ github.repository }}/dependabot/alerts" | \
-          jq '[.[] | select(.security_vulnerability.severity == "high" or .security_vulnerability.severity == "critical") | 
-               {cve: .security_advisory.cve_id, summary: .security_advisory.summary, severity: .security_vulnerability.severity, 
-               created_at: .created_at}]' > dependabot.json
+          jq 'if type=="array" then 
+                [.[] | select(.security_vulnerability.severity == "high" or .security_vulnerability.severity == "critical") | 
+                {cve: .security_advisory.cve_id, summary: .security_advisory.summary, severity: .security_vulnerability.severity, created_at: .created_at}] 
+              else [] end' > dependabot.json
 
       - name: Fetch CodeQL Alerts
         run: |
-          curl -H "Authorization: token ${{ secrets.SECURITY_TOKEN }}" \
+          curl -s -H "Authorization: token ${{ secrets.SECURITY_TOKEN }}" \
                -H "Accept: application/vnd.github.v3+json" \
                "https://api.github.com/repos/${{ github.repository }}/code-scanning/alerts" | \
-          jq '[.[] | select(.rule.severity == "high" or .rule.severity == "critical") | 
-               {id: .rule.id, description: .rule.description, severity: .rule.severity, created_at: .created_at}]' > codeql.json
+          jq 'if type=="array" then 
+                [.[] | select(.rule.severity == "high" or .rule.severity == "critical") | 
+                {id: .rule.id, description: .rule.description, severity: .rule.severity, created_at: .created_at}] 
+              else [] end' > codeql.json
 
-      - name: Process Alerts and Post PR Comment
+      - name: Process Alerts
         run: |
-          echo "Processing Dependabot alerts..."
+          echo "Processing security alerts..."
           DEPENDABOT_ALERTS=""
+          CODEQL_ALERTS=""
           TODAY=$(date +%s)
 
-          while IFS= read -r line; do
-            CVE=$(echo "$line" | jq -r '.cve')
-            SUMMARY=$(echo "$line" | jq -r '.summary')
-            SEVERITY=$(echo "$line" | jq -r '.severity')
-            DISCOVERED=$(echo "$line" | jq -r '.created_at')
-            DISCOVERED_TS=$(date -d "$DISCOVERED" +%s)
-            SLA=$(( SEVERITY == "critical" ? 30 : 60 ))
-            DAYS_OPEN=$(( (TODAY - DISCOVERED_TS) / 86400 ))
-            DAYS_UNDER_OR_OVER=$(( SLA - DAYS_OPEN ))
+          # Process Dependabot Alerts
+          if [[ $(jq length dependabot.json) -gt 0 ]]; then
+            while IFS= read -r line; do
+              CVE=$(echo "$line" | jq -r '.cve')
+              SUMMARY=$(echo "$line" | jq -r '.summary')
+              SEVERITY=$(echo "$line" | jq -r '.severity')
+              DISCOVERED=$(echo "$line" | jq -r '.created_at')
+              DISCOVERED_TS=$(date -d "$DISCOVERED" +%s)
+              SLA=$(( SEVERITY == "critical" ? 30 : 60 ))
+              DAYS_OPEN=$(( (TODAY - DISCOVERED_TS) / 86400 ))
+              DAYS_UNDER_OR_OVER=$(( SLA - DAYS_OPEN ))
 
-            # Color coding based on SLA
-            if [[ $DAYS_UNDER_OR_OVER -lt 0 ]]; then
-              STATUS="🔴 Over SLA ($(( -DAYS_UNDER_OR_OVER )) days overdue)"
-            elif [[ $DAYS_UNDER_OR_OVER -le 5 ]]; then
-              STATUS="🟠 Near SLA ($DAYS_UNDER_OR_OVER days left)"
-            else
-              STATUS="🟢 Under SLA ($DAYS_UNDER_OR_OVER days left)"
-            fi
+              # SLA Status
+              if [[ $DAYS_UNDER_OR_OVER -lt 0 ]]; then
+                STATUS="🔴 Over SLA ($(( -DAYS_UNDER_OR_OVER )) days overdue)"
+              elif [[ $DAYS_UNDER_OR_OVER -le 5 ]]; then
+                STATUS="🟠 Near SLA ($DAYS_UNDER_OR_OVER days left)"
+              else
+                STATUS="🟢 Under SLA ($DAYS_UNDER_OR_OVER days left)"
+              fi
 
-            DEPENDABOT_ALERTS+="\n- **$STATUS** - **$CVE**: $SUMMARY (**Severity:** $SEVERITY, **Discovered:** $DISCOVERED)"
-          done < <(jq -c '.[]' dependabot.json)
+              DEPENDABOT_ALERTS+="\n- **$STATUS** - **$CVE**: $SUMMARY (**Severity:** $SEVERITY, **Discovered:** $DISCOVERED)"
+            done < <(jq -c '.[]' dependabot.json)
+          fi
 
-          echo "Processing CodeQL alerts..."
-          CODEQL_ALERTS=""
-          
-          while IFS= read -r line; do
-            RULE_ID=$(echo "$line" | jq -r '.id')
-            DESCRIPTION=$(echo "$line" | jq -r '.description')
-            SEVERITY=$(echo "$line" | jq -r '.severity')
-            DISCOVERED=$(echo "$line" | jq -r '.created_at')
-            DISCOVERED_TS=$(date -d "$DISCOVERED" +%s)
-            SLA=$(( SEVERITY == "critical" ? 30 : 60 ))
-            DAYS_OPEN=$(( (TODAY - DISCOVERED_TS) / 86400 ))
-            DAYS_UNDER_OR_OVER=$(( SLA - DAYS_OPEN ))
+          # Process CodeQL Alerts
+          if [[ $(jq length codeql.json) -gt 0 ]]; then
+            while IFS= read -r line; do
+              RULE_ID=$(echo "$line" | jq -r '.id')
+              DESCRIPTION=$(echo "$line" | jq -r '.description')
+              SEVERITY=$(echo "$line" | jq -r '.severity')
+              DISCOVERED=$(echo "$line" | jq -r '.created_at')
+              DISCOVERED_TS=$(date -d "$DISCOVERED" +%s)
+              SLA=$(( SEVERITY == "critical" ? 30 : 60 ))
+              DAYS_OPEN=$(( (TODAY - DISCOVERED_TS) / 86400 ))
+              DAYS_UNDER_OR_OVER=$(( SLA - DAYS_OPEN ))
 
-            # Color coding based on SLA
-            if [[ $DAYS_UNDER_OR_OVER -lt 0 ]]; then
-              STATUS="🔴 Over SLA ($(( -DAYS_UNDER_OR_OVER )) days overdue)"
-            elif [[ $DAYS_UNDER_OR_OVER -le 5 ]]; then
-              STATUS="🟠 Near SLA ($DAYS_UNDER_OR_OVER days left)"
-            else
-              STATUS="🟢 Under SLA ($DAYS_UNDER_OR_OVER days left)"
-            fi
+              # SLA Status
+              if [[ $DAYS_UNDER_OR_OVER -lt 0 ]]; then
+                STATUS="🔴 Over SLA ($(( -DAYS_UNDER_OR_OVER )) days overdue)"
+              elif [[ $DAYS_UNDER_OR_OVER -le 5 ]]; then
+                STATUS="🟠 Near SLA ($DAYS_UNDER_OR_OVER days left)"
+              else
+                STATUS="🟢 Under SLA ($DAYS_UNDER_OR_OVER days left)"
+              fi
 
-            CODEQL_ALERTS+="\n- **$STATUS** - **$RULE_ID**: $DESCRIPTION (**Severity:** $SEVERITY, **Discovered:** $DISCOVERED)"
-          done < <(jq -c '.[]' codeql.json)
+              CODEQL_ALERTS+="\n- **$STATUS** - **$RULE_ID**: $DESCRIPTION (**Severity:** $SEVERITY, **Discovered:** $DISCOVERED)"
+            done < <(jq -c '.[]' codeql.json)
+          fi
 
-          COMMENT="### 🚨 Critical & High Security Vulnerabilities 🚨\n\n#### 🔥 Dependabot Alerts:\n$DEPENDABOT_ALERTS\n\n#### 🛠️ CodeQL Alerts:\n$CODEQL_ALERTS\n\n🔎 **For more details, visit the Security tab in this repository.**"
+          # Only post a comment if there are alerts
+          if [[ -n "$DEPENDABOT_ALERTS" || -n "$CODEQL_ALERTS" ]]; then
+            COMMENT="### 🚨 Critical & High Security Vulnerabilities 🚨\n\n#### 🔥 Dependabot Alerts:\n$DEPENDABOT_ALERTS\n\n#### 🛠️ CodeQL Alerts:\n$CODEQL_ALERTS\n\n🔎 **For more details, visit the Security tab in this repository.**"
 
-          echo "Posting comment to PR..."
-          curl -X POST -H "Authorization: token ${{ secrets.SECURITY_TOKEN }}" \
-               -H "Accept: application/vnd.github.v3+json" \
-               -d "{\"body\": \"$COMMENT\"}" \
-               "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments"
+            echo "Posting comment to PR..."
+            curl -X POST -H "Authorization: token ${{ secrets.SECURITY_TOKEN }}" \
+                 -H "Accept: application/vnd.github.v3+json" \
+                 -d "{\"body\": \"$COMMENT\"}" \
+                 "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments"
+          else
+            echo "No critical or high severity vulnerabilities found. No comment will be posted."
+          fi
